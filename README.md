@@ -30,8 +30,9 @@ import (
 
 db, err := gorm.Open(...)
 
+threshold := 50 * time.Millisecond
 err = db.Use(autobatch.New(autobatch.Config{
-    LatencyThreshold: 50 * time.Millisecond, // switch to batch when P95 > 50ms
+    LatencyThreshold: &threshold,            // nil = disabled; 0 = always batch; >0 = adaptive
     FlushTimeout:     10 * time.Millisecond, // flush batch after 10ms idle
     MaxBatchSize:     100,                   // or when 100 ops are buffered
     WindowDuration:   30 * time.Second,      // P95 measured over last 30s
@@ -47,7 +48,7 @@ db.Delete(&record)
 
 | Field | Default | Description |
 |---|---|---|
-| `LatencyThreshold` | `50ms` | P95 above this switches to batch mode |
+| `LatencyThreshold` | `nil` | P95 above this switches to batch mode (`nil` disables batching) |
 | `FlushTimeout` | `10ms` | Max wait before flushing a partial batch |
 | `MaxBatchSize` | `100` | Max ops per batch before forced flush |
 | `WindowDuration` | `30s` | Sliding window duration for P95 measurement |
@@ -64,7 +65,33 @@ Queries (`Find`, `First`, etc.) are not batched.
 
 ## Batch semantics
 
-All operations in a batch run inside a **single transaction**. If any operation fails, the entire batch is rolled back and all callers receive the error. Callers block transparently until their batch is flushed — from the caller's perspective it looks like a normal synchronous GORM call.
+All operations in a batch run inside a **single transaction**. Each op is
+wrapped in its own `SAVEPOINT`, so a per-op failure (e.g. a unique-constraint
+violation) is isolated: only the failing caller gets the error, the rest of
+the batch still commits.
+
+Infrastructure failures of the outer transaction (BEGIN/COMMIT, connection
+loss, savepoint unsupported) propagate to every caller in the batch.
+
+Callers block transparently until their batch is flushed — from the caller's
+perspective it looks like a normal synchronous GORM call.
+
+## Limitations & caveats
+
+- **Operations inside `db.Transaction(...)` or `db.Begin()` are never batched.**
+  They run inline on the user's transaction to preserve atomicity and rollback
+  semantics. The plugin detects this automatically.
+- **Callbacks registered *after* `gorm:create`/`gorm:update`/`gorm:delete` are
+  skipped for batched ops.** Internally the plugin sets `DryRun = true` after
+  the batch executes the op via a separate session, which short-circuits the
+  rest of the callback chain on the caller's `*gorm.DB`. Hooks declared on the
+  model (e.g. `AfterCreate`) **do** run, but inside the batch session — not on
+  the caller's `*gorm.DB`.
+- **`RowsAffected` is propagated** back to the caller's `*gorm.DB` after the
+  batch executes, but other `Statement` fields are not.
+- **Graceful shutdown:** call `plugin.Close()` before exiting your process to
+  drain in-flight batches. After Close, intercepted ops return
+  `ErrBatcherClosed`.
 
 ## License
 

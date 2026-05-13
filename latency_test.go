@@ -83,6 +83,23 @@ func TestWindowP95_BucketRotation(t *testing.T) {
 	}
 }
 
+// TestWindowP95_FastForwardAfterLongIdle verifies that a window left idle for
+// longer than its total duration fast-forwards instead of looping through
+// every bucket — and that all old observations are evicted.
+func TestWindowP95_FastForwardAfterLongIdle(t *testing.T) {
+	// 3 buckets of 20ms each → 60ms total. Sleep for 200ms (>3x the window).
+	w := newWindow(60*time.Millisecond, 3, 64)
+	w.Record(999 * time.Millisecond)
+
+	time.Sleep(200 * time.Millisecond)
+
+	w.Record(1 * time.Millisecond)
+	p95 := w.P95()
+	if p95 > 50*time.Millisecond {
+		t.Fatalf("expected outlier evicted after long idle, got P95=%v", p95)
+	}
+}
+
 func TestPercentile95_Sorted(t *testing.T) {
 	vals := make([]time.Duration, 100)
 	for i := range vals {

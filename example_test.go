@@ -17,8 +17,9 @@ func Example() {
 	// Open your GORM DB as usual (dialector omitted for brevity).
 	var db *gorm.DB // = gorm.Open(...)
 
+	threshold := 50 * time.Millisecond
 	err := db.Use(autobatch.New(autobatch.Config{
-		LatencyThreshold: 50 * time.Millisecond, // switch to batch when P95 > 50ms
+		LatencyThreshold: &threshold,            // switch to batch when P95 > 50ms
 		FlushTimeout:     10 * time.Millisecond, // flush batch after 10ms idle
 		MaxBatchSize:     100,                   // or when 100 ops are buffered
 		WindowDuration:   30 * time.Second,      // P95 measured over last 30s
